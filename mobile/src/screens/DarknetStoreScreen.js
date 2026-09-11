@@ -3,6 +3,9 @@ import { StyleSheet, Text, View, FlatList, TouchableOpacity, SafeAreaView, Alert
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../services/supabase';
 import { useNavigation } from '@react-navigation/native';
+import { FEATURES } from '../config';
+
+const API_BASE_URL = 'https://statiquestudio-github-io.onrender.com';
 
 const STORE_ITEMS = [
   {
@@ -15,7 +18,7 @@ const STORE_ITEMS = [
   {
     id: 'vpn_shield',
     title: 'Brouilleur VPN Chiffré',
-    description: 'Protège l\'anonymat de vos rumeurs sur The Wire pendant 24h.',
+    description: 'Protège l\'anonymat de vos rumeurs pendant 24h.',
     cost: 250,
     type: 'tool',
   },
@@ -28,7 +31,7 @@ const STORE_ITEMS = [
   },
 ];
 
-export default function DarknetStoreScreen({ session, onRefreshTokens }) {
+export default function DarknetStoreScreen({ session }) {
   const [tokens, setTokens] = useState(0);
   const [loading, setLoading] = useState(true);
   const navigation = useNavigation();
@@ -40,12 +43,12 @@ export default function DarknetStoreScreen({ session, onRefreshTokens }) {
   const fetchTokens = async () => {
     if (!session?.user?.id) return;
     try {
-      const resp = await supabase
+      const { data, error } = await supabase
         .from('profiles')
         .select('black_tokens')
         .eq('id', session.user.id)
         .single();
-      if (resp.data) setTokens(resp.data.black_tokens || 0);
+      if (data) setTokens(data.black_tokens || 0);
     } catch (e) {
       console.error(e);
     } finally {
@@ -56,7 +59,7 @@ export default function DarknetStoreScreen({ session, onRefreshTokens }) {
   const handlePurchase = async (item) => {
     if (tokens < item.cost) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Accès refusé', 'Jetons Noirs insuffisants. Approvisionnez votre compte offshore.');
+      Alert.alert('Accès refusé', 'Jetons Noirs insuffisants.');
       return;
     }
 
@@ -65,7 +68,7 @@ export default function DarknetStoreScreen({ session, onRefreshTokens }) {
 
     try {
       const token = session.access_token;
-      const resp = await fetch('http://localhost:8000/api/store/buy', {
+      const resp = await fetch(`${API_BASE_URL}/api/store/buy`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -78,13 +81,12 @@ export default function DarknetStoreScreen({ session, onRefreshTokens }) {
       if (resp.ok) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         Alert.alert('Acquisition réussie', `Contrat validé : ${item.title}`);
-        if (onRefreshTokens) onRefreshTokens();
         fetchTokens();
       } else {
-        Alert.alert('Échec', data.detail || 'Impossible de valider la transaction.');
+        Alert.alert('Échec', data.detail || 'Transaction échouée.');
       }
     } catch (error) {
-      Alert.alert('Erreur réseau', 'Liaison sécurisée compromise.');
+      Alert.alert('Erreur réseau', 'Liaison compromise.');
     } finally {
       setLoading(false);
     }
@@ -101,8 +103,25 @@ export default function DarknetStoreScreen({ session, onRefreshTokens }) {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>// MARCHÉ NOIR : BOUTIQUE OFFSHORE</Text>
-        <Text style={styles.tokenText}>JETONS NOIRS : {tokens} 🪙</Text>
+        <Text style={styles.headerTitle}>// BOUTIQUE OFFSHORE</Text>
+        <Text style={styles.tokenText}>JETONS : {tokens} 🪙</Text>
+      </View>
+
+      <View style={styles.fundingCard}>
+        <View style={styles.fundingInfo}>
+          <Text style={styles.fundingTitle}>APPROVISIONNER LE COMPTE</Text>
+          <Text style={styles.fundingDescription}>
+            Les achats RevenueCat seront disponibles après la phase alpha/bêta.
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={[styles.fundingButton, !FEATURES.monetization && styles.disabledFundingButton]}
+          disabled={!FEATURES.monetization}
+        >
+          <Text style={styles.fundingButtonText}>
+            {FEATURES.monetization ? 'ACHETER' : 'BIENTÔT'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       <FlatList
@@ -120,18 +139,16 @@ export default function DarknetStoreScreen({ session, onRefreshTokens }) {
               onPress={() => handlePurchase(item)}
               disabled={loading}
             >
-              <Text style={styles.buyButtonText}>
-                {loading ? '...' : `${item.cost} 🪙`}
-              </Text>
+              <Text style={styles.buyButtonText}>{item.cost} 🪙</Text>
             </TouchableOpacity>
           </View>
         )}
       />
 
-      <View style={styles footer}>
-        <Text style={styles.backText} onPress={() => navigation.goBack()}>
-          ← Retour au terminal
-        </Text>
+      <View style={styles.footer}>
+        <TouchableOpacity onPress={() => navigation.goBack()}>
+          <Text style={styles.backText}>← Retour au terminal</Text>
+        </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
@@ -142,11 +159,19 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0A0A0A',
   },
+  center: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   header: {
     padding: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#222',
     backgroundColor: '#0D0D0D',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   headerTitle: {
     color: '#00FF66',
@@ -158,9 +183,24 @@ const styles = StyleSheet.create({
     color: '#00FF66',
     fontSize: 13,
     fontWeight: '600',
-    marginTop: 4,
-    marginLeft: 20,
   },
+  fundingCard: {
+    margin: 16,
+    marginBottom: 4,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#333',
+    borderRadius: 6,
+    backgroundColor: '#151515',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  fundingInfo: { flex: 1, paddingRight: 10 },
+  fundingTitle: { color: '#FFF', fontSize: 11, fontWeight: '800', letterSpacing: 0.7 },
+  fundingDescription: { color: '#777', fontSize: 10, lineHeight: 15, marginTop: 5 },
+  fundingButton: { backgroundColor: '#00FF66', borderRadius: 4, paddingVertical: 9, paddingHorizontal: 11 },
+  disabledFundingButton: { backgroundColor: '#292929' },
+  fundingButtonText: { color: '#000', fontSize: 10, fontWeight: '900' },
   listContainer: {
     padding: 16,
   },
@@ -201,11 +241,6 @@ const styles = StyleSheet.create({
     color: '#00FF66',
     fontWeight: 'bold',
     fontSize: 12,
-  },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   footer: {
     padding: 16,

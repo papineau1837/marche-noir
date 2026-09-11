@@ -1,457 +1,298 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, FlatList, TouchableOpacity, ActivityIndicator, SafeAreaView, ScrollView, Animated, Dimensions } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  FlatList,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../services/supabase';
-import { useNavigation } from '@react-navigation/native';
-import Constants from 'expo-constants';
+import { signOut } from '../services/auth';
 
-const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get('window');
+const API_BASE_URL = 'https://statiquestudio-github-io.onrender.com';
 
 export default function TradingScreen({ session }) {
-  const [loading, setLoading] = useState(true);
+  const userId = session?.user?.id || null;
   const [assets, setAssets] = useState([]);
   const [rumors, setRumors] = useState([]);
+  const [selectedAsset, setSelectedAsset] = useState(null);
   const [walletBalance, setWalletBalance] = useState(0);
   const [userTokens, setUserTokens] = useState(0);
-  const navigation = useNavigation();
-
-  // Animation bounce for CTA buttons
-  const bounceAnim = new Animated.Value(0);
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const pulse = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    loadData();
-    setupListeners();
-    
-    return () => {
-      if (channel) supabase.removeChannel(channel);
-    };
-  }, []);
+    let mounted = true;
 
-  const channel = supabase
-    .channel('public:assets')
-    .on(
-      'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'assets' },
-      (payload) => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        loadAssets();
-      }
-    )
-    .subscribe();
+    const loadData = async () => {
+      try {
+        const [assetsResult, rumorsResult, profileResult] = await Promise.all([
+          supabase.from('assets').select('*').order('name'),
+          supabase
+            .from('rumors')
+            .select('id, content, impact_score, created_at')
+            .order('created_at', { ascending: false })
+            .limit(8),
+          userId
+            ? supabase
+                .from('profiles')
+                .select('wallet_balance, black_tokens')
+                .eq('id', userId)
+                .maybeSingle()
+            : Promise.resolve({ data: null, error: null }),
+        ]);
 
-  const loadData = async () => {
-    try {
-      const assetsResp = await supabase.table("assets").select("*").execute();
-      setAssets(assetsResp.data || []);
-      
-      const profileResp = await supabase.table("profiles").select("wallet_balance, black_tokens").eq("id", session.user.id).single().execute();
-      if (profileResp.data) {
-        setWalletBalance(profileResp.data.wallet_balance);
-        setUserTokens(profileResp.data.black_tokens || 0);
-      }
-      
-      const rumorsResp = await supabase.table("rumors").select("*").order("created_at", { ascending: false }).limit(8).execute();
-      setRumors(rumorsResp.data || []);
-      
-      setLoading(false);
-    } catch (error) {
-      console.error('Erreur chargement:', error);
-      setLoading(false);
-    }
-  };
-
-  const setupListeners = () => {
-    const rumorsChannel = supabase
-      .channel('public:rumors')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'rumors' },
-        (payload) => {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-          loadData();
+        if (assetsResult.error) throw assetsResult.error;
+        if (rumorsResult.error) throw rumorsResult.error;
+        if (mounted) {
+          setAssets(assetsResult.data || []);
+          setRumors(rumorsResult.data || []);
+          if (assetsResult.data?.length) setSelectedAsset(assetsResult.data[0]);
+          if (profileResult.data) {
+            setWalletBalance(Number(profileResult.data.wallet_balance || 0));
+            setUserTokens(Number(profileResult.data.black_tokens || 0));
+          }
         }
-      )
-      .subscribe();
-  };
+      } catch (error) {
+        console.error('Erreur de chargement du terminal:', error);
+        if (mounted) Alert.alert('Connexion impossible', 'Le marché est temporairement indisponible.');
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
 
-  const handleBuy = async (assetId, price, quantity) => {
-    const totalCost = price * quantity;
-    if (walletBalance < totalCost) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Fonds insuffisants', 'Vous n\'avez pas assez de Jetons Noirs.');
+    loadData();
+
+    const assetsChannel = supabase
+      .channel(`assets-${userId || 'guest'}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'assets' }, (payload) => {
+        setAssets((current) => current.map((asset) => (
+          asset.id === payload.new.id ? { ...asset, ...payload.new } : asset
+        )));
+      })
+      .subscribe();
+
+    const rumorsChannel = supabase
+      .channel(`rumors-${userId || 'guest'}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'rumors' }, (payload) => {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        setRumors((current) => [payload.new, ...current].slice(0, 8));
+      })
+      .subscribe();
+
+    const pulseAnimation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1.18, duration: 900, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
+      ])
+    );
+    pulseAnimation.start();
+
+    return () => {
+      mounted = false;
+      pulseAnimation.stop();
+      supabase.removeChannel(assetsChannel);
+      supabase.removeChannel(rumorsChannel);
+    };
+  }, [pulse, userId]);
+
+  const placeOrder = async (orderType) => {
+    if (!selectedAsset || actionLoading) return;
+    if (!userId || !session?.access_token) {
+      Alert.alert('Mode test', 'Connectez-vous pour exécuter un ordre réel.');
       return;
     }
-    
+
+    setActionLoading(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    Animated.parallel([
-      Animated.timing(bounceAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
-      Animated.timing(bounceAnim, { toValue: 0, duration: 200, useNativeDriver: true }),
-    ]).start();
-    
-    const orderData = {
-      user_id: session.user.id,
-      asset_id: assetId,
-      order_type: "BUY",
-      price: price,
-      quantity: quantity,
-      status: "PENDING"
-    };
-    
-    const resp = await supabase.table("order_book").insert(orderData).execute();
-    
-    const newBalance = walletBalance - totalCost;
-    await supabase.table("profiles").update({ wallet_balance: newBalance }).eq("id", session.user.id).execute();
-    setWalletBalance(newBalance);
-    
-    const asset = assets.find(a => a.id === assetId);
-    if (asset) {
-      const newPrice = Math.round(asset.current_price * 1.01 * 100) / 100;
-      await supabase.table("assets").update({ current_price: newPrice }).eq("id", assetId).execute();
-      loadAssets();
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/orders`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          asset_id: selectedAsset.id,
+          order_type: orderType,
+          price: Number(selectedAsset.current_price),
+          quantity: 1,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Ordre refusé.');
+
+      Alert.alert('Ordre exécuté', `${orderType === 'BUY' ? 'Achat' : 'Vente'} enregistré.`);
+    } catch (error) {
+      Alert.alert('Ordre impossible', error.message);
+    } finally {
+      setActionLoading(false);
     }
-    
-    Alert.alert('Ordre exécuté', 'Achat de ' + quantity + ' unités à ' + price + ' $');
   };
 
-  const handleSell = async (assetId, price, quantity) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Alert.alert('Vente', 'Fonctionnalité de vente en cours...');
-  };
-
-  const pulseAnimation = () => {
-    bounceAnim.value = 0;
-    Animated.timing(bounceAnim, {
-      toValue: 1,
-      duration: 1500,
-      useNativeDriver: true,
-    });
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+    } catch (error) {
+      Alert.alert('Erreur', 'Impossible de fermer la session.');
+    }
   };
 
   if (loading) {
     return (
       <SafeAreaView style={styles.center}>
-        <Animated.View style={[styles.loader, { transform: [{ scale: bounceAnim }] }]} color="#00FF66">
-          <Text style={styles.loaderText}>CHARGEMENT DU CARNET...</Text>
-        </Animated.View>
+        <ActivityIndicator size="large" color="#00FF66" />
+        <Text style={styles.loadingText}>CONNEXION AU MARCHÉ...</Text>
       </SafeAreaView>
     );
   }
 
-  // Floating action button animation
-  pulseAnimation();
-
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header with animated dot indicator */}
-      <View style={styles.header}>
-        <View style={[styles.liveIndicator, { animation: 'pulse 2s infinite' }]}>
-          <View style={styles.pulsingDot} />
-          <Text style={styles.liveText}>LIVE</Text>
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.header}>
+          <View>
+            <View style={styles.liveRow}>
+              <Animated.View style={[styles.liveDot, { transform: [{ scale: pulse }] }]} />
+              <Text style={styles.liveText}>LIVE MARKET</Text>
+            </View>
+            <Text style={styles.title}>MARCHÉ NOIR</Text>
+          </View>
+          <TouchableOpacity onPress={handleSignOut} style={styles.signOutButton}>
+            <Text style={styles.signOutText}>{userId ? 'QUITTER' : 'MODE TEST'}</Text>
+          </TouchableOpacity>
         </View>
-        
-        <View style={styles.userPanel}>
-          <Text style={styles.walletLabel}>WALLET</Text>
-          <Text style={styles.walletValue}>{walletBalance} $</Text>
-          <Text style={styles.tokenLabel}>TOKENS</Text>
-          <Text style={styles.tokenValue}>{userTokens} 🪙</Text>
+
+        <View style={styles.walletCard}>
+          <View>
+            <Text style={styles.mutedLabel}>SOLDE VIRTUEL</Text>
+            <Text style={styles.walletValue}>{walletBalance.toFixed(2)} $</Text>
+          </View>
+          <View style={styles.tokenBox}>
+            <Text style={styles.mutedLabel}>JETONS NOIRS</Text>
+            <Text style={styles.tokenValue}>{userTokens} 🪙</Text>
+          </View>
         </View>
-      </View>
-      
-      {/* Rumors Feed */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>// THE WIRE</Text>
-        {rumors.length === 0 ? (
-          <Text style={styles.emptyState}>Aucune rumeur pour l'instant. Soyez le premier à en propager une.</Text>
-        ) : (
+
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>// THE WIRE</Text>
+          <Text style={styles.sectionMeta}>{rumors.length} signaux</Text>
+        </View>
+        {rumors.length ? (
           <FlatList
             data={rumors}
-            keyExtractor={(item, index) => index.toString()}
-            contentContainerStyle={styles.rumorList}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            keyExtractor={(item, index) => item.id || String(index)}
             renderItem={({ item }) => (
-              <Animated.View style={[styles.rumorCard, { opacity: rumoredIndex > 0 ? 1 : 0.5 }]} >
-                <View style={styles.rumorContent}>
-                  <Text style={styles.rumorText}>{item.content}</Text>
-                  <Text style={[styles.impactBadge, { color: item.impact_score > 0 ? '#00FF66' : '#FF3333' }]}>
-                    {item.impact_score > 0 ? '↑ PUMP POTENTIEL' : '↓ CRASH IMMINENT'}
-                  </Text>
-                </View>
-              </Animated.View>
+              <View style={styles.rumorCard}>
+                <Text style={styles.rumorText}>{item.content}</Text>
+                <Text style={[styles.impact, { color: Number(item.impact_score) >= 0 ? '#00FF66' : '#FF5555' }]}>
+                  {Number(item.impact_score) >= 0 ? 'PUMP POTENTIEL' : 'CRASH IMMINENT'}
+                </Text>
+              </View>
             )}
           />
+        ) : (
+          <Text style={styles.emptyText}>Aucun signal. Le silence est parfois le meilleur indicateur.</Text>
         )}
-      </View>
-      
-      {/* Assets Carousel/Grid */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>CARNET D'ORDRES</Text>
-        <FlatList
-          horizontal
-          data={assets}
-          keyExtractor={(item, index) => item.id}
-          showsHorizontalScrollIndicator={false}
-          renderItem={({ item }) => (
+
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>// ACTIFS</Text>
+          <Text style={styles.sectionMeta}>{assets.length} marchés</Text>
+        </View>
+        {assets.map((asset) => {
+          const selected = selectedAsset?.id === asset.id;
+          return (
             <TouchableOpacity
-              style={[styles.assetItem, { transform: [{ scale: bounceAnim > 0 ? 1.05 : 1 }] }]}
-              onPress={() => navigation.navigate('Details', { assetId: item.id })}
+              key={asset.id}
+              style={[styles.assetCard, selected && styles.selectedAsset]}
+              onPress={() => setSelectedAsset(asset)}
+              activeOpacity={0.8}
             >
-              <View style={styles.assetPreview}>
-                <Text style={styles.assetName}>{item.name}</Text>
-                <Text style={styles.assetPrice}>{item.current_price} $</Text>
+              <View style={styles.assetInfo}>
+                <Text style={styles.assetName}>{asset.name}</Text>
+                <Text style={styles.assetId}>{String(asset.id).slice(0, 8)}...</Text>
               </View>
-              <View style={styles.assetChevron}>
-                <Text style={styles.chevron}>→</Text>
-              </View>
+              <Text style={styles.assetPrice}>{Number(asset.current_price || 0).toFixed(2)} $</Text>
             </TouchableOpacity>
-          )}
-          deceleration=factor={0.99}
-        />
-      </View>
-      
-      {/* Action Buttons Bar */}
-      <View style={styles.actionBar}>
-        <TouchableOpacity style={[styles.buyButton, { transform: [{ scale: bounceAnim }] }]} onPress={() => handleBuy()}>
-          <Text style={styles.buyButtonText}>VALIDER ACHAT</Text>
+          );
+        })}
+
+        <Text style={styles.selectedLabel}>
+          {selectedAsset ? `ACTIF SÉLECTIONNÉ : ${selectedAsset.name}` : 'SÉLECTIONNEZ UN ACTIF'}
+        </Text>
+        <View style={styles.actions}>
+          <TouchableOpacity
+            style={[styles.actionButton, styles.buyButton]}
+            onPress={() => placeOrder('BUY')}
+            disabled={!selectedAsset || actionLoading}
+          >
+            <Text style={styles.actionText}>{actionLoading ? '...' : 'ACHETER'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.actionButton, styles.sellButton]}
+            onPress={() => placeOrder('SELL')}
+            disabled={!selectedAsset || actionLoading}
+          >
+            <Text style={[styles.actionText, styles.sellText]}>{actionLoading ? '...' : 'VENDRE'}</Text>
+          </TouchableOpacity>
+        </View>
+
+        <TouchableOpacity style={styles.menuButton} onPress={() => navigation.navigate('Menu')}>
+          <Text style={styles.menuButtonText}>← RETOUR AU MENU</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.sellButton} onPress={() => handleSell()}>
-          <Text style={styles.sellButtonText}>EXÉCUTER VENTE</Text>
-        </TouchableOpacity>
-      </View>
-      
-      {/* Navigation Tabs at bottom */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity onPress={() => navigation.navigate('DarknetStore')}>
-          <View style={styles.tabIcon}>
-            <Text style={styles.tabIconText}>🛒</Text>
-          </View>
-          <Text style={styles.tabLabel}>Boutique</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => navigation.navigate('Leaderboard')}>
-          <View style={styles.tabIcon}>
-            <Text style={styles.tabIconText}>👑</Text>
-          </View>
-          <Text style={styles.tabLabel}>Classement</Text>
-        </TouchableOpacity>
-      </View>
+
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0A0A0A',
-    paddingBottom: 20,
-  },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loader: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#1A1A1A',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 50,
-  },
-  loaderText: {
-    color: '#00FF66',
-    fontSize: 12,
-    marginTop: 8,
-    fontWeight: 'bold',
-  },
-  header: {
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#222',
-    backgroundColor: '#0D0D0D',
-    paddingBottom: 8,
-  },
-  liveIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1A1A1A',
-    padding: 6,
-    borderRadius: 20,
-    marginRight: 12,
-  },
-  pulsingDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#00FF66',
-    marginRight: 6,
-    animation: 'pulse 2s infinite',
-  },
-  liveText: {
-    color: '#00FF66',
-    fontSize: 9,
-    fontWeight: 'bold',
-    marginLeft: 4,
-  },
-  userPanel: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  walletLabel: {
-    color: '#666',
-    fontSize: 8,
-    marginRight: 4,
-  },
-  walletValue: {
-    color: '#00FF66',
-    fontSize: 14,
-    fontWeight: 'bold',
-    marginRight: 20,
-  },
-  tokenLabel: {
-    color: '#666',
-    fontSize: 8,
-    marginRight: 4,
-  },
-  tokenValue: {
-    color: '#888',
-    fontSize: 10,
-  },
-  section: {
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#222',
-    backgroundColor: '#0D0D0D',
-  },
-  sectionTitle: {
-    color: '#00FF66',
-    fontSize: 11,
-    fontWeight: 'bold',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginBottom: 10,
-  },
-  rumorList: {
-    maxHeight: 120,
-  },
-  rumorCard: {
-    backgroundColor: '#141414',
-    borderRadius: 6,
-    padding: 10,
-    marginBottom: 8,
-  },
-  rumorText: {
-    color: '#CCC',
-    fontSize: 10,
-    fontFamily: 'monospace',
-    lineHeight: 1.3,
-  },
-  impactBadge: {
-    fontSize: 8,
-    fontWeight: 'bold',
-    marginTop: 2,
-  },
-  assetsSection: {
-    paddingBottom: 8,
-  },
-  assetList: {
-    maxHeight: 350,
-  },
-  assetItem: {
-    width: SCREEN_WIDTH * 0.4,
-    marginRight: 8,
-    marginBottom: 8,
-  },
-  assetPreview: {
-    backgroundColor: '#121212',
-    borderRadius: 8,
-    padding: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    height: 80,
-  },
-  assetName: {
-    color: '#FFF',
-    fontSize: 10,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  assetPrice: {
-    color: '#00FF66',
-    fontSize: 12,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  assetChevron: {
-    alignSelf: 'flex-end',
-  },
-  chevron: {
-    color: '#555',
-    fontSize: 14,
-  },
-  actionBar: {
-    padding: 12,
-    backgroundColor: '#0A0A0A',
-    borderTopWidth: 1,
-    borderTopColor: '#222',
-    justifyContent: 'center',
-  },
-  buyButton: {
-    backgroundColor: '#00FF66',
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 25,
-    marginRight: 12,
-    width: SCREEN_WIDTH * 0.4,
-  },
-  buyButtonText: {
-    color: '#000',
-    fontSize: 13,
-    fontWeight: 'bold',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  sellButton: {
-    backgroundColor: '#2A2A2A',
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 25,
-    borderWidth: 1,
-    borderColor: '#00FF66',
-    width: SCREEN_WIDTH * 0.4,
-  },
-  sellButtonText: {
-    color: '#00FF66',
-    fontSize: 13,
-    fontWeight: 'bold',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  tabBar: {
-    padding: 8,
-    backgroundColor: '#0A0A0A',
-    borderTopWidth: 1,
-    borderTopColor: '#222',
-    justifyContent: 'space-around',
-  },
-  tabIcon: {
-    width: 24,
-    height: 24,
-    marginBottom: 4,
-  },
-  tabIconText: {
-    color: '#00FF66',
-    fontSize: 20,
-  },
-  tabLabel: {
-    color: '#666',
-    fontSize: 9,
-    marginTop: 2,
-    textAlign: 'center',
-  },
-  emptyState: {
-    color: '#777',
-    fontSize: 14,
-    textAlign: 'center',
-    marginTop: 20,
-  },
+  container: { flex: 1, backgroundColor: '#0A0A0A' },
+  content: { padding: 16, paddingBottom: 32 },
+  center: { flex: 1, backgroundColor: '#0A0A0A', justifyContent: 'center', alignItems: 'center' },
+  loadingText: { color: '#00FF66', marginTop: 12, fontSize: 11, letterSpacing: 1 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 },
+  liveRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 7 },
+  liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#00FF66', marginRight: 7 },
+  liveText: { color: '#00FF66', fontSize: 10, fontWeight: '700', letterSpacing: 1 },
+  title: { color: '#FFF', fontSize: 24, fontWeight: '900', letterSpacing: 2 },
+  signOutButton: { borderWidth: 1, borderColor: '#333', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 4 },
+  signOutText: { color: '#888', fontSize: 10, fontWeight: '700' },
+  walletCard: { backgroundColor: '#141414', borderColor: '#252525', borderWidth: 1, borderRadius: 10, padding: 16, flexDirection: 'row', justifyContent: 'space-between', marginBottom: 24 },
+  mutedLabel: { color: '#777', fontSize: 9, letterSpacing: 1 },
+  walletValue: { color: '#00FF66', fontSize: 24, fontWeight: '800', marginTop: 5 },
+  tokenBox: { alignItems: 'flex-end' },
+  tokenValue: { color: '#FFF', fontSize: 16, fontWeight: '700', marginTop: 8 },
+  sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, marginTop: 4 },
+  sectionTitle: { color: '#FF5555', fontSize: 11, fontWeight: '800', letterSpacing: 1.5 },
+  sectionMeta: { color: '#555', fontSize: 10 },
+  rumorCard: { width: 230, minHeight: 80, backgroundColor: '#151515', borderLeftWidth: 3, borderLeftColor: '#FF5555', borderRadius: 6, padding: 12, marginRight: 8, marginBottom: 24 },
+  rumorText: { color: '#DDD', fontSize: 12, lineHeight: 17 },
+  impact: { fontSize: 9, fontWeight: '800', marginTop: 9, letterSpacing: 0.6 },
+  emptyText: { color: '#666', fontSize: 12, marginBottom: 24 },
+  assetCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#121212', borderColor: '#222', borderWidth: 1, borderRadius: 7, padding: 14, marginBottom: 8 },
+  selectedAsset: { borderColor: '#00FF66', backgroundColor: '#131B15' },
+  assetInfo: { flex: 1, paddingRight: 10 },
+  assetName: { color: '#FFF', fontSize: 13, fontWeight: '700' },
+  assetId: { color: '#666', fontSize: 9, marginTop: 4 },
+  assetPrice: { color: '#00FF66', fontSize: 15, fontWeight: '800' },
+  selectedLabel: { color: '#777', fontSize: 10, marginTop: 18, marginBottom: 9 },
+  actions: { flexDirection: 'row', gap: 10 },
+  actionButton: { flex: 1, borderRadius: 6, paddingVertical: 14, alignItems: 'center' },
+  buyButton: { backgroundColor: '#00FF66' },
+  sellButton: { borderWidth: 1, borderColor: '#FF5555', backgroundColor: '#171010' },
+  actionText: { color: '#000', fontSize: 12, fontWeight: '900', letterSpacing: 1 },
+  sellText: { color: '#FF5555' },
+  menuButton: { borderWidth: 1, borderColor: '#333', borderRadius: 6, paddingVertical: 13, alignItems: 'center', marginTop: 14 },
+  menuButtonText: { color: '#AAA', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
 });

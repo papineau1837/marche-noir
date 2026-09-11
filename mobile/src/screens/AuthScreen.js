@@ -1,29 +1,75 @@
-</TextInput>
-      <TextInput
-        style={styles.input}
-        placeholder="Code d'accès (Mot de passe)"
-        placeholderTextColor="#555"
-        secureTextEntry
-        value={password}
-        onChangeText={setPassword}
-      />
+import React, { useState } from 'react';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, Alert, SafeAreaView } from 'react-native';
+import * as Haptics from 'expo-haptics';
+import { signIn, signUp } from '../services/auth';
 
-      <TouchableOpacity style={styles.button} onPress={handleAuth}>
-        <Text style={styles.buttonText}>{isRegistering ? 'CRÉER UN COMPTE' : 'SE CONNECTER'}</Text>
-      </TouchableOpacity>
+export default function AuthScreen({ onAuthenticated }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isRegistering, setIsRegistering] = useState(false);
 
-      <TouchableOpacity
-        onPress={() => {
-          Haptics.selectionAsync();
-          setIsRegistering(!isRegistering);
-        }}
-        style={styles.switchButton}
-      >
-        <Text style={styles.switchText}>
-          {isRegistering ? 'Déjà un compte ? Se connecter' : 'Pas de compte ? S’enrôler'}
-        </Text>
-      </TouchableOpacity>
-    </View>
+  const handleAuth = async () => {
+    if (!email || !password) {
+      Alert.alert('Erreur', 'Veuillez remplir tous les champs.');
+      return;
+    }
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    try {
+      if (isRegistering) {
+        await signUp(email, password);
+        Alert.alert('Succès', 'Compte créé. Connecte-toi maintenant.');
+        setIsRegistering(false);
+      } else {
+        await signIn(email, password);
+        onAuthenticated();
+      }
+    } catch (error) {
+      Alert.alert('Erreur', error.message);
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <View style={styles.content}>
+        <Text style={styles.title}>MARCHÉ NOIR</Text>
+        <Text style={styles.subtitle}>// ACCÈS SÉCURISÉ REQUIS</Text>
+
+        <TextInput
+          style={styles.input}
+          placeholder="Email"
+          placeholderTextColor="#555"
+          autoCapitalize="none"
+          value={email}
+          onChangeText={setEmail}
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Mot de passe"
+          placeholderTextColor="#555"
+          secureTextEntry
+          value={password}
+          onChangeText={setPassword}
+        />
+
+        <TouchableOpacity style={styles.button} onPress={handleAuth}>
+          <Text style={styles.buttonText}>{isRegistering ? 'CRÉER COMPTE' : 'SE CONNECTER'}</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => {
+            Haptics.selectionAsync();
+            setIsRegistering(!isRegistering);
+          }}
+          style={styles.switchButton}
+        >
+          <Text style={styles.switchText}>
+            {isRegistering ? 'Déjà un compte ? Se connecter' : 'Pas de compte ? S\'inscrire'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </SafeAreaView>
   );
 }
 
