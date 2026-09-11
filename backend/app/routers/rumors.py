@@ -1,14 +1,12 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field
-from supabase import create_client
-from app.config import SUPABASE_URL, SUPABASE_KEY
+from app.auth import require_user
+from app.database import supabase
 
 router = APIRouter(prefix="/api/rumors", tags=["Rumors"])
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 class RumorCreate(BaseModel):
-    author_id: str
     asset_id: str
     content: str = Field(..., max_length=140)
     impact_score: float = Field(..., ge=-1.0, le=1.0)
@@ -27,10 +25,12 @@ def get_rumors():
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
-def post_rumor(rumor: RumorCreate):
+def post_rumor(rumor: RumorCreate, authorization: str | None = Header(default=None)):
+    user = require_user(authorization)
+
     try:
         rumor_data = {
-            "author_id": rumor.author_id,
+            "author_id": str(user.id),
             "asset_id": rumor.asset_id,
             "content": rumor.content,
             "impact_score": rumor.impact_score
@@ -49,6 +49,8 @@ def post_rumor(rumor: RumorCreate):
             "message": "Rumeur injectée dans le réseau avec succès. Le marché réagit.",
             "rumor": response.data
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
